@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kurz — self-hosted link shortener</title>
+<meta name="description" content="Self-hosted URL shortener with privacy-friendly click analytics. No cookies, hashed IPs.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #F4F5F2;
+    --ink: #12141A;
+    --muted: #5C6170;
+    --accent: #2036E6;
+    --accent-dark: #16279E;
+    --line: #DCDED6;
+    --card: #FFFFFF;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+    --sans: "Archivo", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { background: var(--paper); }
+  body {
+    font-family: var(--sans);
+    color: var(--ink);
+    line-height: 1.5;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 56px 20px 48px;
+  }
+  a { color: var(--accent); }
+
+  .wordmark {
+    font-weight: 900;
+    font-size: clamp(56px, 14vw, 88px);
+    letter-spacing: -0.05em;
+    line-height: 1;
+  }
+  .wordmark .dot { color: var(--accent); }
+  .tagline {
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 17px;
+    max-width: 46ch;
+  }
+  .tagline strong { color: var(--ink); font-weight: 500; }
+
+  form { margin-top: 36px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .field {
+    flex: 1 1 320px;
+    font-family: var(--mono);
+    font-size: 15px;
+    padding: 13px 14px;
+    border: 1.5px solid var(--ink);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--ink);
+  }
+  .field::placeholder { color: var(--muted); }
+  .btn {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 15px;
+    padding: 13px 22px;
+    border: 1.5px solid var(--accent);
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+  .btn.ghost { background: transparent; color: var(--accent); }
+  .btn.ghost:hover { background: var(--accent); color: #fff; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  .msg { margin-top: 10px; font-size: 14px; color: var(--muted); min-height: 1.4em; }
+  .msg.error { color: #B3261E; }
+
+  /* the short link is the hero artifact */
+  .result {
+    margin-top: 18px;
+    background: var(--card);
+    border: 1.5px solid var(--ink);
+    border-radius: 10px;
+    padding: 22px 20px;
+    display: none;
+  }
+  .result.show { display: block; }
+  .result .label {
+    font-family: var(--mono);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  .short-link {
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: clamp(20px, 5.4vw, 30px);
+    word-break: break-all;
+    margin: 8px 0 16px;
+  }
+  .short-link a { color: var(--ink); text-decoration: none; border-bottom: 2px solid var(--accent); }
+  .result .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .divider { border: 0; border-top: 1px solid var(--line); margin: 48px 0 40px; }
+
+  h2 {
+    font-weight: 700;
+    font-size: 22px;
+    letter-spacing: -0.02em;
+  }
+  .hint { color: var(--muted); font-size: 14px; margin-top: 4px; }
+
+  .stats {
+    margin-top: 18px;
+    background: var(--card);
+    border: 1.5px solid var(--ink);
+    border-radius: 10px;
+    padding: 22px 20px;
+    display: none;
+  }
+  .stats.show { display: block; }
+  .total-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .total {
+    font-weight: 900;
+    font-size: 56px;
+    letter-spacing: -0.04em;
+    line-height: 1;
+  }
+  .total-caption { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+  .target { font-family: var(--mono); font-size: 13px; color: var(--muted); word-break: break-all; margin-top: 6px; }
+
+  .chart {
+    margin-top: 24px;
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 10px;
+    align-items: end;
+    height: 120px;
+  }
+  .chart .col { display: flex; flex-direction: column; justify-content: flex-end; height: 100%; gap: 6px; }
+  .chart .bar {
+    background: var(--accent);
+    border-radius: 3px 3px 0 0;
+    min-height: 3px;
+    height: 0;
+    transition: height 0.5s ease;
+  }
+  .chart .day {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+  }
+  .chart .n {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-align: center;
+    color: var(--ink);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chart .bar { transition: none; }
+  }
+
+  footer {
+    margin-top: 56px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">kurz<span class="dot">.</span></div>
+  <p class="tagline"><strong>Short links with honest analytics.</strong> Self-hosted, no cookies, visitor IPs are hashed — built to be GDPR-friendly by design.</p>
+</header>
+
+<main>
+  <form id="shorten-form">
+    <label class="visually-hidden" for="url" style="position:absolute;left:-9999px">Long URL</label>
+    <input class="field" id="url" name="url" type="url" placeholder="https://a-very-long-url.example.com/..." required>
+    <button class="btn" type="submit">Shorten</button>
+  </form>
+  <p class="msg" id="shorten-msg" role="status"></p>
+
+  <section class="result" id="result" aria-live="polite">
+    <span class="label">Your short link</span>
+    <div class="short-link"><a id="short-a" href="#" target="_blank" rel="noopener"></a></div>
+    <div class="actions">
+      <button class="btn" id="copy-btn" type="button">Copy link</button>
+      <button class="btn ghost" id="see-stats-btn" type="button">See its stats</button>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <h2>Click stats</h2>
+  <p class="hint">Paste a short link or its code. Counts update within seconds of a click.</p>
+  <form id="stats-form">
+    <label for="code" style="position:absolute;left:-9999px">Short code</label>
+    <input class="field" id="code" name="code" type="text" placeholder="ab3Xk9Q" required>
+    <button class="btn ghost" type="submit">Load stats</button>
+  </form>
+  <p class="msg" id="stats-msg" role="status"></p>
+
+  <section class="stats" id="stats" aria-live="polite">
+    <div class="total-row">
+      <span class="total" id="total">0</span>
+      <span class="total-caption">clicks total · last 7 days below</span>
+    </div>
+    <p class="target" id="target"></p>
+    <div class="chart" id="chart"></div>
+  </section>
+</main>
+
+<footer>
+  FastAPI · PostgreSQL · Redis · Caddy — deployed with Docker Compose &amp; GitHub Actions.
+</footer>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  // --- shorten -------------------------------------------------------------
+  $("shorten-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = $("shorten-msg");
+    msg.textContent = "Creating…";
+    msg.classList.remove("error");
+    try {
+      const resp = await fetch("/api/links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: $("url").value.trim() }),
+      });
+      if (!resp.ok) throw new Error("The URL was rejected. Use a full http(s) address.");
+      const data = await resp.json();
+      const a = $("short-a");
+      a.textContent = data.short_url.replace(/^https?:\/\//, "");
+      a.href = data.short_url;
+      a.dataset.full = data.short_url;
+      a.dataset.code = data.code;
+      $("result").classList.add("show");
+      msg.textContent = "";
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.classList.add("error");
+    }
+  });
+
+  $("copy-btn").addEventListener("click", async () => {
+    const btn = $("copy-btn");
+    await navigator.clipboard.writeText($("short-a").dataset.full);
+    btn.textContent = "Copied";
+    setTimeout(() => (btn.textContent = "Copy link"), 1500);
+  });
+
+  $("see-stats-btn").addEventListener("click", () => {
+    $("code").value = $("short-a").dataset.code;
+    $("stats-form").requestSubmit();
+    $("stats-form").scrollIntoView({ behavior: "smooth" });
+  });
+
+  // --- stats ---------------------------------------------------------------
+  $("stats-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = $("stats-msg");
+    msg.textContent = "Loading…";
+    msg.classList.remove("error");
+    const code = $("code").value.trim().split("/").pop();
+    try {
+      const resp = await fetch(`/api/links/${encodeURIComponent(code)}/stats`);
+      if (!resp.ok) throw new Error("Unknown code. Check the link and try again.");
+      render(await resp.json());
+      msg.textContent = "";
+    } catch (err) {
+      $("stats").classList.remove("show");
+      msg.textContent = err.message;
+      msg.classList.add("error");
+    }
+  });
+
+  function render(data) {
+    $("total").textContent = data.total_clicks;
+    $("target").textContent = "→ " + data.target_url;
+    const chart = $("chart");
+    chart.innerHTML = "";
+    const max = Math.max(1, ...data.daily.map((d) => d.clicks));
+    for (const d of data.daily) {
+      const col = document.createElement("div");
+      col.className = "col";
+      const n = document.createElement("div");
+      n.className = "n";
+      n.textContent = d.clicks;
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      const day = document.createElement("div");
+      day.className = "day";
+      day.textContent = new Date(d.day).toLocaleDateString("en", { weekday: "short" });
+      col.append(n, bar, day);
+      chart.append(col);
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => (bar.style.height = `${(d.clicks / max) * 100}%`))
+      );
+    }
+    $("stats").classList.add("show");
+  }
+</script>
+</body>
+</html>

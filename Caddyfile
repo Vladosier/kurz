@@ -1,0 +1,34 @@
+# Caddy config: automatic HTTPS for {$DOMAIN}.
+# Routing:
+#   /            -> static landing page (web/index.html)
+#   /api/*       -> FastAPI backend
+#   /healthz     -> FastAPI backend (uptime checks)
+#   /{code}      -> FastAPI backend (short-link redirects)
+
+{$DOMAIN} {
+	encode gzip
+
+	handle /favicon.ico {
+		respond 204
+	}
+
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	# exact "/" only — serve the landing page
+	handle / {
+		root * /srv
+		file_server
+	}
+
+	# everything else (short codes, /healthz) goes to the API
+	handle {
+		reverse_proxy api:8000
+	}
+}
+
+# Host-specific sites that are not part of this project (and may hold
+# credentials) live in ./caddy-local/*.caddy, which is gitignored.
+# A glob that matches nothing is fine — Caddy just logs a warning.
+import /etc/caddy/local/*.caddy

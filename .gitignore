@@ -1,0 +1,11 @@
+# secrets & local state
+.env
+caddy-local/
+backups/
+*.log
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/

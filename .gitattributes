@@ -1,0 +1,14 @@
+# This project is written on Windows and runs on Linux.
+# Force LF in the repo and on checkout, so shell scripts and Dockerfiles
+# never reach the server with CRLF line endings.
+* text=auto eol=lf
+
+*.sh      text eol=lf
+Dockerfile text eol=lf
+Caddyfile text eol=lf
+*.sql     text eol=lf
+*.yml     text eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

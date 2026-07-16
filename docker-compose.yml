@@ -1,0 +1,94 @@
+services:
+  api:
+    image: ${IMAGE:-ghcr.io/vladosier/kurz}:${TAG:-latest}
+    build: ./app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    image: ${IMAGE:-ghcr.io/vladosier/kurz}:${TAG:-latest}
+    build: ./app
+    command: ["python", "-m", "app.worker"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env  # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    env_file: .env  # DOMAIN
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-local:/etc/caddy/local:ro
+      - ./web:/srv:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - default          # api, worker, db, redis
+      - calendar_default # pre-existing calendar stack
+      - proxy            # shared network for other host containers
+    depends_on:
+      - api
+
+volumes:
+  db-data:
+  redis-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  default:
+  # Networks that already exist on the host — created outside this project.
+  calendar_default:
+    external: true
+  proxy:
+    external: true
