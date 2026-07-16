@@ -25,9 +25,17 @@ flowchart LR
 ```
 
 The design decision that matters: **a redirect never waits for the database.**
-On every hit the API pushes a small JSON event to a Redis queue and immediately
-returns `302`. A separate worker container drains the queue into Postgres.
-If Postgres is slow or briefly down, links keep working and analytics catch up.
+Resolution is cache-first — the `code → target` mapping is cached in Redis when
+a link is created, so a redirect is served straight from Redis and only falls
+back to Postgres on a cache miss. The click itself is recorded asynchronously:
+the API pushes a JSON event to a Redis queue and returns `302` immediately,
+while a separate worker drains the queue into Postgres.
+
+So if Postgres is slow or briefly down, existing links keep redirecting and
+clicks queue up until the database returns. The worker parks each event in a
+processing list while writing it, so a crash mid-insert can't lose it, and
+events that can never succeed are moved to a dead-letter list rather than
+blocking the queue. (Creating *new* links still needs Postgres.)
 
 | Service | Tech | Role |
 |---|---|---|

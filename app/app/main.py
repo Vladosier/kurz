@@ -34,6 +34,10 @@ log = logging.getLogger("kurz.api")
 
 ALPHABET = string.ascii_letters + string.digits
 
+# Sentinel cached for codes that don't exist, so repeated hits to a bogus code
+# are answered from Redis instead of hammering Postgres (cache penetration).
+CACHE_MISS_UNKNOWN = "\x00miss"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -52,7 +56,7 @@ class LinkIn(BaseModel):
     url: HttpUrl
 
 
-@app.get("/healthz")
+@app.api_route("/healthz", methods=["GET", "HEAD"])
 async def healthz(request: Request):
     await db.pool.fetchval("SELECT 1")
     await request.app.state.redis.ping()
@@ -60,7 +64,7 @@ async def healthz(request: Request):
 
 
 @app.post("/api/links", status_code=201)
-async def create_link(payload: LinkIn):
+async def create_link(payload: LinkIn, request: Request):
     target = str(payload.url)
     # retry on the (unlikely) collision of a random code
     for _ in range(5):
@@ -73,6 +77,14 @@ async def create_link(payload: LinkIn):
             )
         except asyncpg.UniqueViolationError:
             continue
+        # Warm the cache so redirects can be served without touching Postgres.
+        # Best-effort: a cache miss just falls back to the database.
+        try:
+            await request.app.state.redis.set(
+                settings.LINK_CACHE_PREFIX + code, target, ex=settings.LINK_CACHE_TTL
+            )
+        except Exception:
+            log.exception("failed to warm link cache for %s", code)
         return {
             "code": code,
             "short_url": f"{settings.BASE_URL}/{code}",
@@ -125,17 +137,48 @@ def _visitor_hash(request: Request) -> str:
     return digest[:16]
 
 
-# NB: keep this route LAST — it matches any single path segment.
-@app.get("/{code}")
-async def redirect(code: str, request: Request):
-    link = await db.pool.fetchrow(
-        "SELECT id, target_url FROM links WHERE code = $1", code
+async def _resolve_target(request: Request, code: str) -> str | None:
+    """Return the target URL for a code, or None if it does not exist.
+
+    Cache-first: a healthy Redis serves redirects even while Postgres is down.
+    On a cache miss we read Postgres and backfill the cache. A distinct value
+    (CACHE_MISS_UNKNOWN) is cached for unknown codes so a flood of hits to a
+    bogus code cannot stampede the database.
+    """
+    key = settings.LINK_CACHE_PREFIX + code
+    try:
+        cached = await request.app.state.redis.get(key)
+    except Exception:
+        cached = None  # Redis down: fall through to Postgres
+    if cached == CACHE_MISS_UNKNOWN:
+        return None
+    if cached:
+        return cached
+
+    row = await db.pool.fetchrow(
+        "SELECT target_url FROM links WHERE code = $1", code
     )
-    if link is None:
+    target = row["target_url"] if row else None
+    try:
+        await request.app.state.redis.set(
+            key,
+            target if target is not None else CACHE_MISS_UNKNOWN,
+            ex=settings.LINK_CACHE_TTL,
+        )
+    except Exception:
+        pass  # caching is best-effort
+    return target
+
+
+# NB: keep this route LAST — it matches any single path segment.
+@app.api_route("/{code}", methods=["GET", "HEAD"])
+async def redirect(code: str, request: Request):
+    target = await _resolve_target(request, code)
+    if target is None:
         raise HTTPException(status_code=404, detail="unknown code")
 
     event = {
-        "link_id": link["id"],
+        "code": code,
         "ts": datetime.now(timezone.utc).isoformat(),
         "referrer": request.headers.get("referer"),
         "user_agent": request.headers.get("user-agent"),
@@ -147,4 +190,4 @@ async def redirect(code: str, request: Request):
         # analytics must never break redirects
         log.exception("failed to enqueue click event")
 
-    return RedirectResponse(link["target_url"], status_code=302)
+    return RedirectResponse(target, status_code=302)

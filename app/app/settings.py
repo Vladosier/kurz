@@ -28,4 +28,15 @@ BASE_URL = os.getenv("BASE_URL", "http://localhost").rstrip("/")
 HASH_SALT = os.getenv("HASH_SALT", "dev-salt-change-me")
 
 CLICKS_QUEUE = "kurz:clicks"
+# Events are moved here while being written, so a crash mid-insert cannot lose
+# them; anything left over is requeued on the next worker start.
+CLICKS_PROCESSING = "kurz:clicks:processing"
+# Events that could not be written after MAX_ATTEMPTS, or that are malformed.
+CLICKS_DEAD = "kurz:clicks:dead"
+
+# code -> target cache. This is what keeps redirects alive while Postgres is
+# down, so it is load-bearing, not an optimisation.
+LINK_CACHE_PREFIX = "kurz:link:"
+LINK_CACHE_TTL = 86400  # seconds
+
 CODE_LENGTH = 7
