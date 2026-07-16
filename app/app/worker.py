@@ -75,6 +75,39 @@ async def requeue_stale(r: redis.Redis) -> None:
         log.info("requeued %d in-flight event(s) from a previous run", moved)
 
 
+async def consume_one(r: redis.Redis, pool: asyncpg.Pool, timeout: int = 5) -> bool:
+    """One iteration of the consume loop: take an event, write it, ack it.
+
+    Returns False on idle timeout, True if an event was handled. Kept as a
+    separate function so tests can drive the REAL consumption path.
+    """
+    # Atomically pop the oldest event and park it in the processing list,
+    # so it is never only "in memory" — a crash leaves it recoverable.
+    raw = await r.blmove(
+        settings.CLICKS_QUEUE, settings.CLICKS_PROCESSING, timeout, "RIGHT", "LEFT"
+    )
+    if raw is None:
+        return False  # idle timeout — let the caller re-check the stop flag
+
+    try:
+        await write_click(pool, raw)
+    except PermanentError as exc:
+        log.warning("dead-lettering event: %s", exc)
+        await r.lpush(settings.CLICKS_DEAD, raw)
+        await r.lrem(settings.CLICKS_PROCESSING, 1, raw)
+    except Exception:
+        # Transient (e.g. Postgres down): put it back and back off. The
+        # event stays safe in the queue the whole time.
+        log.exception("write failed, requeuing event; retrying in 2s")
+        await r.lmove(
+            settings.CLICKS_PROCESSING, settings.CLICKS_QUEUE, "LEFT", "RIGHT"
+        )
+        await asyncio.sleep(2)
+    else:
+        await r.lrem(settings.CLICKS_PROCESSING, 1, raw)  # ack: done
+    return True
+
+
 async def main() -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -87,33 +120,7 @@ async def main() -> None:
     log.info("worker started (queue=%s)", settings.CLICKS_QUEUE)
 
     while not stop.is_set():
-        # Atomically pop the oldest event and park it in the processing list,
-        # so it is never only "in memory" — a crash leaves it recoverable.
-        raw = await r.blmove(
-            settings.CLICKS_QUEUE, settings.CLICKS_PROCESSING, timeout=5,
-            src="RIGHT", destination="LEFT",
-        )
-        if raw is None:
-            continue  # idle timeout — re-check the stop flag
-
-        try:
-            await write_click(pool, raw)
-        except PermanentError as exc:
-            log.warning("dead-lettering event: %s", exc)
-            await r.lpush(settings.CLICKS_DEAD, raw)
-            await r.lrem(settings.CLICKS_PROCESSING, 1, raw)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # Transient (e.g. Postgres down): put it back and back off. The
-            # event stays safe in the queue the whole time.
-            log.exception("write failed, requeuing event; retrying in 2s")
-            await r.lmove(
-                settings.CLICKS_PROCESSING, settings.CLICKS_QUEUE, "LEFT", "RIGHT"
-            )
-            await asyncio.sleep(2)
-        else:
-            await r.lrem(settings.CLICKS_PROCESSING, 1, raw)  # ack: done
+        await consume_one(r, pool)
 
     await r.aclose()
     await pool.close()

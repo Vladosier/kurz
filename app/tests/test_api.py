@@ -14,7 +14,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app import settings
 from app.main import app
-from app.worker import write_click
+from app.worker import consume_one
 
 
 @pytest.fixture
@@ -64,10 +64,12 @@ async def test_redirect_accepts_head(client):
 
 
 async def test_click_is_persisted_end_to_end(client, db_pool):
-    """The real path: redirect -> Redis queue -> worker -> Postgres -> stats.
+    """The real path: redirect -> Redis queue -> worker loop -> Postgres -> stats.
 
-    This is the test that was missing: it drives the worker and asserts the
-    click COUNT changes, not merely that the response is shaped like a number.
+    Drives consume_one(), the worker's actual loop body — including the
+    BLMOVE queue handoff — not a hand-fed fragment of it. (The first version
+    of this test drained the queue itself and so never executed the worker's
+    Redis calls; a broken BLMOVE invocation shipped with 7 green tests.)
     """
     resp = await client.post("/api/links", json={"url": "https://example.com/page"})
     assert resp.status_code == 201
@@ -77,12 +79,16 @@ async def test_click_is_persisted_end_to_end(client, db_pool):
     assert resp.status_code == 302
     assert resp.headers["location"] == "https://example.com/page"
 
-    # drain the one queued event through the actual worker function
     r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-    raw = await r.rpop(settings.CLICKS_QUEUE)
-    await r.aclose()
-    assert raw is not None, "redirect did not enqueue a click event"
-    await write_click(db_pool, raw)  # must not raise; must write exactly one row
+    try:
+        handled = await consume_one(r, db_pool, timeout=1)
+        assert handled is True, "worker found no event in the queue"
+        # the event was acked: nothing left anywhere
+        assert await r.llen(settings.CLICKS_QUEUE) == 0
+        assert await r.llen(settings.CLICKS_PROCESSING) == 0
+        assert await r.llen(settings.CLICKS_DEAD) == 0
+    finally:
+        await r.aclose()
 
     resp = await client.get(f"/api/links/{code}/stats")
     assert resp.status_code == 200
