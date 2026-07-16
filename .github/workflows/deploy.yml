@@ -95,6 +95,7 @@ jobs:
           script: |
             set -e
             cd /opt/kurz
+            git pull --ff-only
             docker compose pull api worker
             docker compose up -d
             docker image prune -f
